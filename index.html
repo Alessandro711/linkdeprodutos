@@ -1,0 +1,507 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Links Afiliados Shopee – Redirecionador</title>
+  <meta name="description" content="Encontre rapidamente os links dos produtos anunciados no TikTok/Instagram. Digite o código do vídeo ou procure pelo nome. Não é loja; apenas redirecionador de links." />
+  <meta name="theme-color" content="#ea580c" />
+  <link rel="shortcut icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 128 128'><rect rx='24' width='128' height='128' fill='%23ea580c'/><text x='50%' y='54%' dominant-baseline='middle' text-anchor='middle' fill='white' font-family='Arial' font-weight='800' font-size='76'>S</text></svg>">
+  <!-- Tailwind via CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    // Tailwind basic config (optional)
+    tailwind.config = {
+      theme: { extend: { colors: { brand: { DEFAULT: '#ea580c', 50: '#fff3eb', 100: '#ffe6d6', 200: '#ffc5a8', 300: '#ffa17a', 400: '#ff7d4c', 500: '#ff5f26', 600: '#ea580c', 700: '#c2460a' }}}}
+    }
+  </script>
+  <!-- React 18 + ReactDOM UMD + Babel (para usar JSX no navegador) -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <!-- SheetJS para XLSX -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <style>
+    /* Evita layout shift no sticky header */
+    body { background: #fff; }
+    .line-clamp-1{display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;overflow:hidden}
+  </style>
+</head>
+<body class="antialiased text-gray-900">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useMemo, useEffect } = React;
+
+    // -------------------- Config --------------------
+    const ADMIN_QUERY_FLAG = 'admin'; // ?admin=1 para abrir o painel
+    const ADMIN_DEMO_PASS = 'ribeiro711'; // altere aqui
+    const STORAGE_KEY = 'shopee_afiliados_produtos_v1';
+    const BRAND = { name: 'Links Afiliados Shopee', tagline: 'Encontre o produto do vídeo usando o código' };
+
+    const CATEGORIES = [
+      { id: 'casa-cozinha', label: 'Casa & Cozinha', emoji: '🏠' },
+      { id: 'moda', label: 'Moda Feminina & Masculina', emoji: '👗' },
+      { id: 'utilitarios', label: 'Utilitários', emoji: '🧰' },
+    ];
+
+    // Seed inicial caso não haja nada no storage
+    const SEED = [
+
+
+    ];
+
+    // -------------------- Helpers --------------------
+    const clsx = (...c) => c.filter(Boolean).join(' ');
+    const loadProducts = () => {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if (!raw) return null;
+        return JSON.parse(raw);
+      } catch(e){ console.error(e); return null; }
+    };
+    const saveProducts = (list) => {
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(list)); } catch(e){ console.error(e); }
+    };
+
+    // -------------------- XLSX Helpers --------------------
+    const exportarXLSX = (produtos) => {
+      try {
+        // Preparar dados para exportação
+        const dadosExport = produtos.map(p => ({
+          'Nome': p.nome,
+          'Código': p.codigo,
+          'Categoria': p.categoria,
+          'Imagem': p.imagem || '',
+          'Link Afiliado': p.linkAfiliado,
+          'Ativo': p.ativo ? 'Sim' : 'Não'
+        }));
+
+        // Criar workbook
+        const wb = XLSX.utils.book_new();
+        const ws = XLSX.utils.json_to_sheet(dadosExport);
+        
+        // Adicionar larguras das colunas
+        const colWidths = [
+          { wch: 40 }, // Nome
+          { wch: 10 }, // Código
+          { wch: 20 }, // Categoria
+          { wch: 50 }, // Imagem
+          { wch: 60 }, // Link Afiliado
+          { wch: 8 }   // Ativo
+        ];
+        ws['!cols'] = colWidths;
+
+        XLSX.utils.book_append_sheet(wb, ws, 'Produtos');
+        
+        // Salvar arquivo
+        XLSX.writeFile(wb, 'produtos-shopee-afiliados.xlsx');
+      } catch (error) {
+        console.error('Erro ao exportar XLSX:', error);
+        alert('Erro ao exportar arquivo XLSX. Verifique o console para mais detalhes.');
+      }
+    };
+
+    const importarXLSX = (file, callback) => {
+      try {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          try {
+            const data = new Uint8Array(e.target.result);
+            const workbook = XLSX.read(data, { type: 'array' });
+            
+            // Pegar a primeira planilha
+            const sheetName = workbook.SheetNames[0];
+            const worksheet = workbook.Sheets[sheetName];
+            
+            // Converter para JSON
+            const jsonData = XLSX.utils.sheet_to_json(worksheet);
+            
+            // Mapear dados para formato interno
+            const produtosImportados = jsonData.map(row => {
+              // Validar categoria
+              const categoria = CATEGORIES.find(c => c.id === row.Categoria || c.label === row.Categoria);
+              
+              return {
+                id: crypto?.randomUUID?.() || Math.random().toString(36).slice(2),
+                nome: row.Nome || row.nome || '',
+                codigo: (row.Código || row.codigo || '').toString().toUpperCase(),
+                categoria: categoria?.id || CATEGORIES[0].id,
+                imagem: row.Imagem || row.imagem || '',
+                linkAfiliado: row['Link Afiliado'] || row.linkAfiliado || row['Link de Afiliado'] || '',
+                ativo: row.Ativo === 'Sim' || row.ativo === true || row.ativo === 'true' || row.ativo === 1
+              };
+            }).filter(p => p.nome && p.codigo && p.linkAfiliado); // Filtrar apenas produtos válidos
+            
+            if (produtosImportados.length === 0) {
+              alert('Nenhum produto válido encontrado no arquivo. Verifique se as colunas Nome, Código e Link Afiliado estão preenchidas.');
+              return;
+            }
+            
+            callback(produtosImportados);
+          } catch (error) {
+            console.error('Erro ao processar XLSX:', error);
+            alert('Erro ao processar arquivo XLSX. Verifique se o formato está correto.');
+          }
+        };
+        reader.readAsArrayBuffer(file);
+      } catch (error) {
+        console.error('Erro ao ler arquivo:', error);
+        alert('Erro ao ler arquivo XLSX.');
+      }
+    };
+
+    // -------------------- UI --------------------
+    function Header({ onSelectCategoria, currentCategoria }){
+      return (
+        <header className="sticky top-0 z-40 backdrop-blur bg-white/70 border-b border-orange-100">
+          <div className="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-orange-500 to-orange-600 grid place-items-center text-white font-black">S</div>
+              <div>
+                <h1 className="text-lg font-bold text-gray-900">{BRAND.name}</h1>
+                <p className="text-xs text-gray-500">{BRAND.tagline}</p>
+              </div>
+            </div>
+            <nav className="hidden md:flex items-center gap-2">
+              {CATEGORIES.map(c => (
+                <button key={c.id} onClick={() => onSelectCategoria(c.id)}
+                  className={clsx('px-3 py-1.5 rounded-full text-sm', currentCategoria===c.id ? 'bg-orange-600 text-white' : 'bg-orange-50 text-orange-700 hover:bg-orange-100')}>
+                  <span className="mr-1">{c.emoji}</span>{c.label}
+                </button>
+              ))}
+            </nav>
+          </div>
+        </header>
+      );
+    }
+
+    function Hero({ value, setValue, onSubmit }){
+      return (
+        <section className="bg-gradient-to-br from-orange-500 via-orange-600 to-orange-700 text-white">
+          <div className="max-w-5xl mx-auto px-4 py-10 md:py-14">
+            <h2 className="text-2xl md:text-4xl font-extrabold leading-tight">
+              Digite o <span className="underline decoration-white/60">código</span> do vídeo ou procure pelo <span className="underline decoration-white/60">nome</span>
+            </h2>
+            <p className="mt-2 text-white/90 max-w-2xl">
+              Esta página <b>não é uma loja</b>. Ela apenas redireciona você para os links oficiais dos produtos na Shopee, usando nossos códigos de afiliado.
+            </p>
+            <form onSubmit={(e)=>{e.preventDefault(); onSubmit();}} className="mt-6 flex gap-2">
+              <input value={value} onChange={(e)=>setValue(e.target.value)} placeholder="Ex.: C001, M101, lanterna..."
+                     className="flex-1 px-4 py-3 rounded-2xl text-gray-900 placeholder:text-gray-400 focus:outline-none shadow-inner" />
+              <button type="submit" className="px-6 py-3 rounded-2xl bg-white text-orange-700 font-semibold hover:bg-orange-50 shadow">Buscar</button>
+            </form>
+          </div>
+        </section>
+      );
+    }
+
+    function CategoriaGrid({ onOpenCategoria }){
+      return (
+        <section className="max-w-5xl mx-auto px-4 py-8 grid md:grid-cols-3 gap-4">
+          {CATEGORIES.map(c => (
+            <button key={c.id} onClick={()=>onOpenCategoria(c.id)} className="group rounded-2xl p-5 text-left bg-white border border-orange-100 hover:shadow-lg transition-all">
+              <div className="text-4xl mb-3">{c.emoji}</div>
+              <h3 className="text-lg font-bold text-gray-900 group-hover:text-orange-700">{c.label}</h3>
+              <p className="text-sm text-gray-600 mt-1">Ver apenas produtos desta categoria</p>
+            </button>
+          ))}
+        </section>
+      );
+    }
+
+    function ProductCard({ p, onClick }){
+      return (
+        <div className="rounded-2xl overflow-hidden border border-orange-100 bg-white hover:shadow-md transition">
+          <div className="aspect-[4/3] bg-gray-50 overflow-hidden">
+            <img src={p.imagem} alt={p.nome} className="w-full h-full object-cover"/>
+          </div>
+          <div className="p-4">
+            <div className="flex items-center justify-between">
+              <h4 className="font-semibold text-gray-900 line-clamp-1" title={p.nome}>{p.nome}</h4>
+              <span className="ml-2 text-xs px-2 py-0.5 rounded-full bg-orange-100 text-orange-700 font-bold">{p.codigo}</span>
+            </div>
+            <p className="text-xs text-gray-500 mt-1">{CATEGORIES.find(c=>c.id===p.categoria)?.label}</p>
+            <button onClick={onClick} className="mt-3 w-full py-2.5 rounded-xl bg-orange-600 text-white font-semibold hover:bg-orange-700">Ir para o produto</button>
+          </div>
+        </div>
+      );
+    }
+
+    function ProductGrid({ itens, onOpenLink }){
+      if (!itens.length) return <div className="text-center text-gray-500 py-16">Nenhum produto encontrado.</div>;
+      return (
+        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {itens.map(p => <ProductCard key={p.id} p={p} onClick={()=>onOpenLink(p)} />)}
+        </div>
+      );
+    }
+
+    function Footer(){
+      return (
+        <footer className="max-w-5xl mx-auto px-4 py-10 text-sm text-gray-500">
+          <div className="border-t pt-6 border-orange-100">
+            <p>
+              Aviso: somos participantes do programa de afiliados. Ao comprar pelos nossos links, você nos ajuda sem pagar nada a mais. Esta página é um
+              <b> redirecionador de links</b> e <b>não vende</b> produtos diretamente.
+            </p>
+          </div>
+        </footer>
+      );
+    }
+
+    // -------------------- Admin --------------------
+    function AdminGate({ onUnlock }){
+      const [pass, setPass] = useState('');
+      return (
+        <div className="min-h-screen bg-gradient-to-br from-orange-50 to-white grid place-items-center p-4">
+          <div className="max-w-md w-full bg-white border border-orange-100 rounded-2xl p-6 shadow">
+            <h2 className="text-xl font-bold mb-2">Acesso Administrativo</h2>
+            <p className="text-sm text-gray-600 mb-4">Insira a senha para gerenciar os produtos.</p>
+            <input type="password" value={pass} onChange={(e)=>setPass(e.target.value)} placeholder="Digite a senha"
+                   className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:outline-none"/>
+            <button onClick={()=> pass===ADMIN_DEMO_PASS && onUnlock()} className="mt-4 w-full py-3 rounded-xl bg-orange-600 text-white font-semibold hover:bg-orange-700">Entrar</button>
+            <p className="text-xs text-gray-400 mt-3">Dica: altere a constante <code>ADMIN_DEMO_PASS</code> no código.</p>
+          </div>
+        </div>
+      );
+    }
+
+    function AdminPage({ produtos, setProdutos }){
+      const empty = { id: '', nome: '', codigo: '', categoria: CATEGORIES[0].id, imagem: '', linkAfiliado: '', ativo: true };
+      const [form, setForm] = useState(empty);
+      const [filtro, setFiltro] = useState('');
+      const [editId, setEditId] = useState(null);
+
+      const filtrados = useMemo(()=>{
+        const q = filtro.trim().toLowerCase();
+        return produtos
+          .filter(p => [p.nome, p.codigo, p.categoria].join(' ').toLowerCase().includes(q))
+          .sort((a,b)=> a.nome.localeCompare(b.nome));
+      }, [produtos, filtro]);
+
+      function resetForm(){ setForm(empty); setEditId(null); }
+
+      function salvar(){
+        if (!form.nome || !form.codigo || !form.linkAfiliado) { alert('Preencha nome, código e link do afiliado.'); return; }
+        const codigoExiste = produtos.some(p => p.codigo.toLowerCase()===form.codigo.toLowerCase() && p.id!==editId);
+        if (codigoExiste){ alert('Já existe um produto com esse código.'); return; }
+        if (editId){
+          const atualizados = produtos.map(p => p.id===editId ? { ...form, id: editId } : p);
+          setProdutos(atualizados); saveProducts(atualizados); resetForm(); return;
+        }
+        const novo = { ...form, id: (crypto?.randomUUID?.() || Math.random().toString(36).slice(2)) };
+        const list = [...produtos, novo]; setProdutos(list); saveProducts(list); resetForm();
+      }
+
+      function editar(p){ setEditId(p.id); setForm({ ...p }); }
+      function remover(id){ if(!confirm('Remover este item?')) return; const list = produtos.filter(p=>p.id!==id); setProdutos(list); saveProducts(list); if (editId===id) resetForm(); }
+
+      function exportarJSON(){ const blob = new Blob([JSON.stringify(produtos, null, 2)], { type: 'application/json' }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href=url; a.download='produtos-shopee-afiliados.json'; a.click(); URL.revokeObjectURL(url); }
+      function importarJSON(e){ const file = e.target.files?.[0]; if(!file) return; const reader = new FileReader(); reader.onload = ()=>{ try{ const data = JSON.parse(reader.result); if(!Array.isArray(data)) throw new Error('Formato inválido'); setProdutos(data); saveProducts(data); alert(`${data.length} produtos importados com sucesso!`); } catch(err){ alert('Não foi possível importar o JSON.'); } }; reader.readAsText(file); }
+
+      function handleImportarXLSX(e) {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        
+        importarXLSX(file, (produtosImportados) => {
+          if (confirm(`Importar ${produtosImportados.length} produtos? Isso substituirá todos os produtos existentes.`)) {
+            setProdutos(produtosImportados);
+            saveProducts(produtosImportados);
+            alert(`${produtosImportados.length} produtos importados com sucesso!`);
+          }
+        });
+        
+        // Limpar input file
+        e.target.value = '';
+      }
+
+      return (
+        <div className="min-h-screen bg-orange-50/40">
+          <div className="max-w-6xl mx-auto px-4 py-6">
+            <div className="flex items-start justify-between gap-4 flex-wrap">
+              <div>
+                <h1 className="text-2xl font-bold">Admin · Produtos</h1>
+                <p className="text-sm text-gray-600">Gerencie códigos e links de afiliados.</p>
+              </div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <button onClick={exportarJSON} className="px-3 py-2 rounded-xl bg-white border hover:bg-orange-50 text-sm">📄 JSON</button>
+                <button onClick={() => exportarXLSX(produtos)} className="px-3 py-2 rounded-xl bg-green-600 text-white hover:bg-green-700 text-sm">📊 Exportar XLSX</button>
+                <label className="px-3 py-2 rounded-xl bg-white border hover:bg-orange-50 cursor-pointer text-sm">📄 Importar JSON
+                  <input type="file" accept="application/json" onChange={importarJSON} className="hidden" />
+                </label>
+                <label className="px-3 py-2 rounded-xl bg-blue-600 text-white hover:bg-blue-700 cursor-pointer text-sm">📊 Importar XLSX
+                  <input type="file" accept=".xlsx,.xls" onChange={handleImportarXLSX} className="hidden" />
+                </label>
+              </div>
+            </div>
+
+            <div className="mt-6 grid md:grid-cols-3 gap-6">
+              <div className="md:col-span-1 bg-white rounded-2xl border p-4">
+                <h3 className="font-semibold mb-3">{editId ? 'Editar produto' : 'Novo produto'}</h3>
+                <div className="space-y-3">
+                  <input className="w-full px-3 py-2 rounded-xl border" placeholder="Nome do produto" value={form.nome} onChange={(e)=>setForm({...form, nome:e.target.value})} />
+                  <div className="flex gap-2">
+                    <input className="flex-1 px-3 py-2 rounded-xl border" placeholder="Código (ex.: C001)" value={form.codigo} onChange={(e)=>setForm({...form, codigo:e.target.value.toUpperCase()})} />
+                    <select className="px-3 py-2 rounded-xl border" value={form.categoria} onChange={(e)=>setForm({...form, categoria:e.target.value})}>
+                      {CATEGORIES.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
+                    </select>
+                  </div>
+                  <input className="w-full px-3 py-2 rounded-xl border" placeholder="URL da imagem (opcional)" value={form.imagem} onChange={(e)=>setForm({...form, imagem:e.target.value})} />
+                  <input className="w-full px-3 py-2 rounded-xl border" placeholder="Link de afiliado completo da Shopee" value={form.linkAfiliado} onChange={(e)=>setForm({...form, linkAfiliado:e.target.value})} />
+                  <label className="flex items-center gap-2 text-sm">
+                    <input type="checkbox" checked={form.ativo} onChange={(e)=>setForm({...form, ativo:e.target.checked})} /> Ativo
+                  </label>
+                  <div className="flex gap-2">
+                    <button onClick={salvar} className="flex-1 py-2 rounded-xl bg-orange-600 text-white font-semibold hover:bg-orange-700">{editId ? 'Salvar alterações' : 'Adicionar'}</button>
+                    {editId && <button onClick={resetForm} className="px-3 py-2 rounded-xl border bg-white">Cancelar</button>}
+                  </div>
+                </div>
+              </div>
+
+              <div className="md:col-span-2 bg-white rounded-2xl border p-4">
+                <div className="flex items-center justify-between gap-3 mb-4">
+                  <input placeholder="Filtrar por nome, código ou categoria" className="flex-1 px-3 py-2 rounded-xl border" value={filtro} onChange={(e)=>setFiltro(e.target.value)} />
+                  <span className="text-sm text-gray-500">{filtrados.length} itens</span>
+                </div>
+
+                {/* Informações sobre o formato XLSX */}
+                <div className="mb-4 p-3 bg-blue-50 rounded-xl border border-blue-200">
+                  <h4 className="text-sm font-semibold text-blue-800 mb-1">Formato XLSX esperado:</h4>
+                  <p className="text-xs text-blue-700">
+                    Colunas: <strong>Nome</strong>, <strong>Código</strong>, <strong>Categoria</strong> (casa-cozinha, moda, utilitarios), <strong>Imagem</strong>, <strong>Link Afiliado</strong>, <strong>Ativo</strong> (Sim/Não)
+                  </p>
+                </div>
+
+                <div className="overflow-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="text-left text-gray-500">
+                        <th className="py-2">Código</th>
+                        <th>Nome</th>
+                        <th>Categoria</th>
+                        <th>Status</th>
+                        <th className="text-right">Ações</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filtrados.map(p => (
+                        <tr key={p.id} className="border-t">
+                          <td className="py-2 font-bold">{p.codigo}</td>
+                          <td className="max-w-[300px] truncate" title={p.nome}>{p.nome}</td>
+                          <td>{CATEGORIES.find(c=>c.id===p.categoria)?.label}</td>
+                          <td>
+                            <span className={clsx('px-2 py-0.5 rounded-full text-xs font-semibold', p.ativo ? 'bg-green-100 text-green-700' : 'bg-gray-200 text-gray-600')}>{p.ativo ? 'Ativo' : 'Inativo'}</span>
+                          </td>
+                          <td className="text-right space-x-2">
+                            <button onClick={()=>editar(p)} className="px-2 py-1 rounded-lg border text-xs">Editar</button>
+                            <button onClick={()=>remover(p.id)} className="px-2 py-1 rounded-lg border text-red-600 text-xs">Remover</button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // -------------------- Público --------------------
+    function PublicPage({ produtos, openLink }){
+      const [query, setQuery] = useState('');
+      const [viewCategoria, setViewCategoria] = useState(null);
+
+      useEffect(()=>{
+        const params = new URLSearchParams(window.location.search);
+        const cat = params.get('categoria');
+        if (cat && CATEGORIES.some(c=>c.id===cat)) setViewCategoria(cat);
+      }, []);
+
+      const ativos = useMemo(()=> produtos.filter(p=>p.ativo), [produtos]);
+
+      const resultados = useMemo(()=>{
+        const q = query.trim().toLowerCase();
+        if (!q && !viewCategoria) return ativos.slice(0,9);
+        return ativos.filter(p => {
+          const inCategoria = viewCategoria ? p.categoria===viewCategoria : true;
+          if (!q) return inCategoria;
+          const text = `${p.nome} ${p.codigo}`.toLowerCase();
+          return inCategoria && text.includes(q);
+        });
+      }, [ativos, query, viewCategoria]);
+
+      function handleSubmit(){
+        const code = query.trim().toLowerCase();
+        if (!code) return;
+        const match = ativos.find(p => p.codigo.toLowerCase()===code);
+        if (match) openLink(match);
+      }
+
+      return (
+        <div className="min-h-screen bg-orange-50/40">
+          <Header onSelectCategoria={(id)=>setViewCategoria(id)} currentCategoria={viewCategoria} />
+          <Hero value={query} setValue={setQuery} onSubmit={handleSubmit} />
+
+          <div className="max-w-5xl mx-auto px-4 py-6">
+            {!viewCategoria && (<>
+              <CategoriaGrid onOpenCategoria={(id)=>setViewCategoria(id)} />
+              <h3 className="px-1 mt-2 mb-3 font-semibold text-gray-700">Destaques</h3>
+            </>)}
+
+            {viewCategoria && (
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="font-semibold text-gray-700">
+                  {CATEGORIES.find(c=>c.id===viewCategoria)?.emoji} {CATEGORIES.find(c=>c.id===viewCategoria)?.label}
+                </h3>
+                <button onClick={()=>setViewCategoria(null)} className="text-sm px-3 py-1.5 rounded-full bg-white border hover:bg-orange-50">Ver todas categorias</button>
+              </div>
+            )}
+
+            <ProductGrid itens={resultados} onOpenLink={openLink} />
+          </div>
+
+          <Footer />
+        </div>
+      );
+    }
+
+    // -------------------- Root App --------------------
+    function App(){
+      const [produtos, setProdutos] = useState([]);
+      const [adminUnlocked, setAdminUnlocked] = useState(false);
+
+      useEffect(()=>{
+        let data = loadProducts();
+        if (!data || !Array.isArray(data) || data.length===0){ data = SEED; saveProducts(data); }
+        setProdutos(data);
+      }, []);
+
+      const params = new URLSearchParams(window.location.search);
+      const wantsAdmin = params.get(ADMIN_QUERY_FLAG) === '1';
+
+      function openLink(produto){
+        try{
+          const url = new URL(produto.linkAfiliado);
+          url.searchParams.set('utm_source','bio');
+          url.searchParams.set('utm_medium','landing-links');
+          url.searchParams.set('utm_campaign', produto.codigo);
+          window.open(url.toString(), '_blank');
+        } catch(e){
+          // fallback simples
+          window.open(produto.linkAfiliado, '_blank');
+        }
+      }
+
+      if (wantsAdmin && !adminUnlocked) return <AdminGate onUnlock={()=>setAdminUnlocked(true)} />;
+      if (wantsAdmin && adminUnlocked) return <AdminPage produtos={produtos} setProdutos={setProdutos} />;
+      return <PublicPage produtos={produtos} openLink={openLink} />;
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
