@@ -36,6 +36,26 @@
     // -------------------- Config --------------------
     const ADMIN_QUERY_FLAG = 'admin'; // ?admin=1 para abrir o painel
     const ADMIN_DEMO_PASS = 'ribeiro711'; // altere aqui
+    
+    // CONFIGURAÇÃO DA NUVEM - ALTERE ESTAS VARIÁVEIS
+    const CLOUD_CONFIG = {
+      // Crie uma conta gratuita em https://jsonbin.io e substitua pelos seus dados
+      API_KEY: '$2a$10$s/Ih6DVRslBhVGmpIvG4sOrcm2CkOmqi1RGvo.Aga9q4KMKdyD8GC', // Sua API Key do JSONBin.io
+      BIN_ID: '68bd1ed0d0ea881f40749c87', // ID do seu "bin" (será criado automaticamente)
+      BASE_URL: 'https://api.jsonbin.io/v3'
+    };
+    // Persistência do BIN_ID no navegador
+    const BIN_STORAGE_KEY = 'jsonbin_bin_id';
+    function getBinId() {
+      const raw = (localStorage.getItem(BIN_STORAGE_KEY) || CLOUD_CONFIG.BIN_ID || '').trim();
+      return raw;
+    }
+    function saveBinId(id) {
+      const v = (id || '').trim();
+      if (!v) return;
+      localStorage.setItem(BIN_STORAGE_KEY, v);
+    }
+
     const STORAGE_KEY = 'shopee_afiliados_produtos_v1';
     const BRAND = { name: 'Links Afiliados Shopee', tagline: 'Encontre o produto do vídeo usando o código' };
 
@@ -46,13 +66,69 @@
     ];
 
     // Seed inicial caso não haja nada no storage
-    const SEED = [
+    const SEED = [];
 
+    // -------------------- Cloud Storage Helpers --------------------
+    
+    // Função para salvar na nuvem
+    const saveToCloud = async (data) => {
+      try {
+        const response = await fetch(`${CLOUD_CONFIG.BASE_URL}/b/${getBinId()}`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Master-Key': CLOUD_CONFIG.API_KEY,
+            'X-Bin-Versioning': 'false'
+          },
+          body: JSON.stringify({
+            produtos: data,
+            lastUpdate: new Date().toISOString()
+          })
+        });
+        
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
+        console.log('✅ Dados salvos na nuvem');
+        return true;
+      } catch (error) {
+        console.error('❌ Erro ao salvar na nuvem:', error);
+        return false;
+      }
+    };
 
-    ];
+    // Função para carregar da nuvem
+    const loadFromCloud = async () => {
+      try {
+        const response = await fetch(`${CLOUD_CONFIG.BASE_URL}/b/${getBinId()}/latest`, {
+          headers: {
+            'X-Master-Key': CLOUD_CONFIG.API_KEY
+          }
+        });
+        
+        if (!response.ok) {
+          if (response.status === 404) {
+            // Bin não existe, criar um novo
+            console.log('📦 Criando novo banco de dados na nuvem...');
+            await saveToCloud(SEED);
+            return SEED;
+          }
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
+        const result = await response.json();
+        console.log('✅ Dados carregados da nuvem');
+        return result.record.produtos || SEED;
+      } catch (error) {
+        console.error('❌ Erro ao carregar da nuvem:', error);
+        return null;
+      }
+    };
 
     // -------------------- Helpers --------------------
     const clsx = (...c) => c.filter(Boolean).join(' ');
+    
     const loadProducts = () => {
       try {
         const raw = localStorage.getItem(STORAGE_KEY);
@@ -60,8 +136,28 @@
         return JSON.parse(raw);
       } catch(e){ console.error(e); return null; }
     };
-    const saveProducts = (list) => {
-      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(list)); } catch(e){ console.error(e); }
+    
+    const saveProducts = async (list) => {
+      try { 
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(list)); 
+        // Salvar também na nuvem
+        await saveToCloud(list);
+      } catch(e){ console.error(e); }
+    };
+
+    // Função para sincronizar dados
+    const syncProducts = async () => {
+      try {
+        const cloudData = await loadFromCloud();
+        if (cloudData) {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(cloudData));
+          return cloudData;
+        }
+        return loadProducts() || SEED;
+      } catch (error) {
+        console.error('Erro na sincronização:', error);
+        return loadProducts() || SEED;
+      }
     };
 
     // -------------------- XLSX Helpers --------------------
@@ -152,6 +248,28 @@
     };
 
     // -------------------- UI --------------------
+    function SyncStatus({ isLoading, lastSync, onSync }) {
+      return (
+        <div className="flex items-center gap-2 text-xs">
+          <button 
+            onClick={onSync} 
+            disabled={isLoading}
+            className={clsx(
+              'px-2 py-1 rounded-lg border text-xs transition',
+              isLoading ? 'opacity-50 cursor-not-allowed' : 'hover:bg-orange-50'
+            )}
+          >
+            {isLoading ? '🔄 Sincronizando...' : '☁️ Sincronizar'}
+          </button>
+          {lastSync && (
+            <span className="text-gray-500">
+              Últ. sync: {new Date(lastSync).toLocaleTimeString()}
+            </span>
+          )}
+        </div>
+      );
+    }
+
     function Header({ onSelectCategoria, currentCategoria }){
       return (
         <header className="sticky top-0 z-40 backdrop-blur bg-white/70 border-b border-orange-100">
@@ -241,10 +359,7 @@
       return (
         <footer className="max-w-5xl mx-auto px-4 py-10 text-sm text-gray-500">
           <div className="border-t pt-6 border-orange-100">
-            <p>
-              Aviso: somos participantes do programa de afiliados. Ao comprar pelos nossos links, você nos ajuda sem pagar nada a mais. Esta página é um
-              <b> redirecionador de links</b> e <b>não vende</b> produtos diretamente.
-            </p>
+
           </div>
         </footer>
       );
@@ -267,7 +382,7 @@
       );
     }
 
-    function AdminPage({ produtos, setProdutos }){
+    function AdminPage({ produtos, setProdutos, onSync, syncStatus }){
       const empty = { id: '', nome: '', codigo: '', categoria: CATEGORIES[0].id, imagem: '', linkAfiliado: '', ativo: true };
       const [form, setForm] = useState(empty);
       const [filtro, setFiltro] = useState('');
@@ -282,32 +397,70 @@
 
       function resetForm(){ setForm(empty); setEditId(null); }
 
-      function salvar(){
+      async function salvar(){
         if (!form.nome || !form.codigo || !form.linkAfiliado) { alert('Preencha nome, código e link do afiliado.'); return; }
         const codigoExiste = produtos.some(p => p.codigo.toLowerCase()===form.codigo.toLowerCase() && p.id!==editId);
         if (codigoExiste){ alert('Já existe um produto com esse código.'); return; }
         if (editId){
           const atualizados = produtos.map(p => p.id===editId ? { ...form, id: editId } : p);
-          setProdutos(atualizados); saveProducts(atualizados); resetForm(); return;
+          setProdutos(atualizados); 
+          await saveProducts(atualizados); 
+          resetForm(); 
+          return;
         }
         const novo = { ...form, id: (crypto?.randomUUID?.() || Math.random().toString(36).slice(2)) };
-        const list = [...produtos, novo]; setProdutos(list); saveProducts(list); resetForm();
+        const list = [...produtos, novo]; 
+        setProdutos(list); 
+        await saveProducts(list); 
+        resetForm();
       }
 
       function editar(p){ setEditId(p.id); setForm({ ...p }); }
-      function remover(id){ if(!confirm('Remover este item?')) return; const list = produtos.filter(p=>p.id!==id); setProdutos(list); saveProducts(list); if (editId===id) resetForm(); }
+      
+      async function remover(id){ 
+        if(!confirm('Remover este item?')) return; 
+        const list = produtos.filter(p=>p.id!==id); 
+        setProdutos(list); 
+        await saveProducts(list); 
+        if (editId===id) resetForm(); 
+      }
 
-      function exportarJSON(){ const blob = new Blob([JSON.stringify(produtos, null, 2)], { type: 'application/json' }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href=url; a.download='produtos-shopee-afiliados.json'; a.click(); URL.revokeObjectURL(url); }
-      function importarJSON(e){ const file = e.target.files?.[0]; if(!file) return; const reader = new FileReader(); reader.onload = ()=>{ try{ const data = JSON.parse(reader.result); if(!Array.isArray(data)) throw new Error('Formato inválido'); setProdutos(data); saveProducts(data); alert(`${data.length} produtos importados com sucesso!`); } catch(err){ alert('Não foi possível importar o JSON.'); } }; reader.readAsText(file); }
+      function exportarJSON(){ 
+        const blob = new Blob([JSON.stringify(produtos, null, 2)], { type: 'application/json' }); 
+        const url = URL.createObjectURL(blob); 
+        const a = document.createElement('a'); 
+        a.href=url; 
+        a.download='produtos-shopee-afiliados.json'; 
+        a.click(); 
+        URL.revokeObjectURL(url); 
+      }
 
-      function handleImportarXLSX(e) {
+      async function importarJSON(e){ 
+        const file = e.target.files?.[0]; 
+        if(!file) return; 
+        const reader = new FileReader(); 
+        reader.onload = async ()=>{ 
+          try{ 
+            const data = JSON.parse(reader.result); 
+            if(!Array.isArray(data)) throw new Error('Formato inválido'); 
+            setProdutos(data); 
+            await saveProducts(data); 
+            alert(`${data.length} produtos importados com sucesso!`); 
+          } catch(err){ 
+            alert('Não foi possível importar o JSON.'); 
+          } 
+        }; 
+        reader.readAsText(file); 
+      }
+
+      async function handleImportarXLSX(e) {
         const file = e.target.files?.[0];
         if (!file) return;
         
-        importarXLSX(file, (produtosImportados) => {
+        importarXLSX(file, async (produtosImportados) => {
           if (confirm(`Importar ${produtosImportados.length} produtos? Isso substituirá todos os produtos existentes.`)) {
             setProdutos(produtosImportados);
-            saveProducts(produtosImportados);
+            await saveProducts(produtosImportados);
             alert(`${produtosImportados.length} produtos importados com sucesso!`);
           }
         });
@@ -325,6 +478,11 @@
                 <p className="text-sm text-gray-600">Gerencie códigos e links de afiliados.</p>
               </div>
               <div className="flex items-center gap-2 flex-wrap">
+                <SyncStatus 
+                  isLoading={syncStatus.isLoading} 
+                  lastSync={syncStatus.lastSync} 
+                  onSync={onSync} 
+                />
                 <button onClick={exportarJSON} className="px-3 py-2 rounded-xl bg-white border hover:bg-orange-50 text-sm">📄 JSON</button>
                 <button onClick={() => exportarXLSX(produtos)} className="px-3 py-2 rounded-xl bg-green-600 text-white hover:bg-green-700 text-sm">📊 Exportar XLSX</button>
                 <label className="px-3 py-2 rounded-xl bg-white border hover:bg-orange-50 cursor-pointer text-sm">📄 Importar JSON
@@ -336,25 +494,85 @@
               </div>
             </div>
 
+
             <div className="mt-6 grid md:grid-cols-3 gap-6">
               <div className="md:col-span-1 bg-white rounded-2xl border p-4">
                 <h3 className="font-semibold mb-3">{editId ? 'Editar produto' : 'Novo produto'}</h3>
+
                 <div className="space-y-3">
-                  <input className="w-full px-3 py-2 rounded-xl border" placeholder="Nome do produto" value={form.nome} onChange={(e)=>setForm({...form, nome:e.target.value})} />
-                  <div className="flex gap-2">
-                    <input className="flex-1 px-3 py-2 rounded-xl border" placeholder="Código (ex.: C001)" value={form.codigo} onChange={(e)=>setForm({...form, codigo:e.target.value.toUpperCase()})} />
-                    <select className="px-3 py-2 rounded-xl border" value={form.categoria} onChange={(e)=>setForm({...form, categoria:e.target.value})}>
-                      {CATEGORIES.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
-                    </select>
-                  </div>
-                  <input className="w-full px-3 py-2 rounded-xl border" placeholder="URL da imagem (opcional)" value={form.imagem} onChange={(e)=>setForm({...form, imagem:e.target.value})} />
-                  <input className="w-full px-3 py-2 rounded-xl border" placeholder="Link de afiliado completo da Shopee" value={form.linkAfiliado} onChange={(e)=>setForm({...form, linkAfiliado:e.target.value})} />
+                  {/* Nome */}
+                  <input
+                    className="w-full px-3 py-2 rounded-xl border"
+                    placeholder="Nome do produto"
+                    value={form.nome}
+                    onChange={(e) => setForm({ ...form, nome: e.target.value })}
+                  />
+
+                  {/* Categoria (abaixo do nome) */}
+                  <select
+                    className="w-full px-3 py-2 rounded-xl border"
+                    value={form.categoria}
+                    onChange={(e) => setForm({ ...form, categoria: e.target.value })}
+                  >
+                    {CATEGORIES.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.label}
+                      </option>
+                    ))}
+                  </select>
+
+                  {/* Código (vem depois da categoria) */}
+                  <input
+                    className="w-full px-3 py-2 rounded-xl border"
+                    placeholder="Código (ex.: C001)"
+                    value={form.codigo}
+                    onChange={(e) =>
+                      setForm({ ...form, codigo: e.target.value.toUpperCase() })
+                    }
+                  />
+
+                  {/* URL da imagem */}
+                  <input
+                    className="w-full px-3 py-2 rounded-xl border"
+                    placeholder="URL da imagem (opcional)"
+                    value={form.imagem}
+                    onChange={(e) => setForm({ ...form, imagem: e.target.value })}
+                  />
+
+                  {/* Link afiliado */}
+                  <input
+                    className="w-full px-3 py-2 rounded-xl border"
+                    placeholder="Link de afiliado completo da Shopee"
+                    value={form.linkAfiliado}
+                    onChange={(e) => setForm({ ...form, linkAfiliado: e.target.value })}
+                  />
+
+                  {/* Ativo */}
                   <label className="flex items-center gap-2 text-sm">
-                    <input type="checkbox" checked={form.ativo} onChange={(e)=>setForm({...form, ativo:e.target.checked})} /> Ativo
+                    <input
+                      type="checkbox"
+                      checked={form.ativo}
+                      onChange={(e) => setForm({ ...form, ativo: e.target.checked })}
+                    />
+                    Ativo
                   </label>
+
+                  {/* Botões */}
                   <div className="flex gap-2">
-                    <button onClick={salvar} className="flex-1 py-2 rounded-xl bg-orange-600 text-white font-semibold hover:bg-orange-700">{editId ? 'Salvar alterações' : 'Adicionar'}</button>
-                    {editId && <button onClick={resetForm} className="px-3 py-2 rounded-xl border bg-white">Cancelar</button>}
+                    <button
+                      onClick={salvar}
+                      className="flex-1 py-2 rounded-xl bg-orange-600 text-white font-semibold hover:bg-orange-700"
+                    >
+                      {editId ? 'Salvar alterações' : 'Adicionar'}
+                    </button>
+                    {editId && (
+                      <button
+                        onClick={resetForm}
+                        className="px-3 py-2 rounded-xl border bg-white"
+                      >
+                        Cancelar
+                      </button>
+                    )}
                   </div>
                 </div>
               </div>
@@ -365,13 +583,6 @@
                   <span className="text-sm text-gray-500">{filtrados.length} itens</span>
                 </div>
 
-                {/* Informações sobre o formato XLSX */}
-                <div className="mb-4 p-3 bg-blue-50 rounded-xl border border-blue-200">
-                  <h4 className="text-sm font-semibold text-blue-800 mb-1">Formato XLSX esperado:</h4>
-                  <p className="text-xs text-blue-700">
-                    Colunas: <strong>Nome</strong>, <strong>Código</strong>, <strong>Categoria</strong> (casa-cozinha, moda, utilitarios), <strong>Imagem</strong>, <strong>Link Afiliado</strong>, <strong>Ativo</strong> (Sim/Não)
-                  </p>
-                </div>
 
                 <div className="overflow-auto">
                   <table className="w-full text-sm">
@@ -472,12 +683,62 @@
     function App(){
       const [produtos, setProdutos] = useState([]);
       const [adminUnlocked, setAdminUnlocked] = useState(false);
+      const [syncStatus, setSyncStatus] = useState({
+        isLoading: false,
+        lastSync: null
+      });
 
+      // Carregar produtos na inicialização
       useEffect(()=>{
-        let data = loadProducts();
-        if (!data || !Array.isArray(data) || data.length===0){ data = SEED; saveProducts(data); }
-        setProdutos(data);
+        const initializeData = async () => {
+          setSyncStatus(prev => ({ ...prev, isLoading: true }));
+          
+          try {
+            // Tentar carregar da nuvem primeiro
+            const cloudData = await loadFromCloud();
+            if (cloudData && Array.isArray(cloudData) && cloudData.length > 0) {
+              setProdutos(cloudData);
+              localStorage.setItem(STORAGE_KEY, JSON.stringify(cloudData));
+              setSyncStatus(prev => ({ ...prev, lastSync: Date.now() }));
+            } else {
+              // Se não houver dados na nuvem, usar dados locais ou seed
+              const localData = loadProducts();
+              const finalData = localData || SEED;
+              setProdutos(finalData);
+              
+              // Se há dados locais mas não na nuvem, sincronizar para a nuvem
+              if (localData && localData.length > 0) {
+                await saveToCloud(localData);
+              }
+            }
+          } catch (error) {
+            console.error('Erro ao inicializar dados:', error);
+            // Em caso de erro, usar dados locais
+            const localData = loadProducts() || SEED;
+            setProdutos(localData);
+          } finally {
+            setSyncStatus(prev => ({ ...prev, isLoading: false }));
+          }
+        };
+
+        initializeData();
       }, []);
+
+      // Função para sincronização manual
+      const handleSync = async () => {
+        setSyncStatus(prev => ({ ...prev, isLoading: true }));
+        
+        try {
+          const data = await syncProducts();
+          setProdutos(data);
+          setSyncStatus(prev => ({ ...prev, lastSync: Date.now() }));
+        } catch (error) {
+          console.error('Erro na sincronização:', error);
+          alert('Erro ao sincronizar dados. Verifique sua conexão com a internet.');
+        } finally {
+          setSyncStatus(prev => ({ ...prev, isLoading: false }));
+        }
+      };
 
       const params = new URLSearchParams(window.location.search);
       const wantsAdmin = params.get(ADMIN_QUERY_FLAG) === '1';
@@ -496,7 +757,14 @@
       }
 
       if (wantsAdmin && !adminUnlocked) return <AdminGate onUnlock={()=>setAdminUnlocked(true)} />;
-      if (wantsAdmin && adminUnlocked) return <AdminPage produtos={produtos} setProdutos={setProdutos} />;
+      if (wantsAdmin && adminUnlocked) return (
+        <AdminPage 
+          produtos={produtos} 
+          setProdutos={setProdutos}
+          onSync={handleSync}
+          syncStatus={syncStatus}
+        />
+      );
       return <PublicPage produtos={produtos} openLink={openLink} />;
     }
 
